@@ -1,0 +1,114 @@
+/**
+ * Copyright (C) 2020 Mike Hummel (mh@mhus.de)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *         http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.summerclouds.common.jms;
+
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+
+import org.summerclouds.common.core.node.IProperties;
+import org.summerclouds.common.core.node.MProperties;
+import org.summerclouds.common.core.pojo.ActionsOnlyStrategy;
+import org.summerclouds.common.core.pojo.PojoAction;
+import org.summerclouds.common.core.pojo.PojoModel;
+import org.summerclouds.common.core.pojo.PojoParser;
+import org.summerclouds.common.core.pojo.Public;
+
+public class PojoServiceDescriptor extends ServiceDescriptor {
+
+    private Object service;
+    private PojoModel model;
+
+    public PojoServiceDescriptor(Class<?> ifc) {
+        this(ifc, null);
+    }
+
+    //    public PojoServiceDescriptor(Object service) {
+    //        this(findIfc(service), service);
+    //    }
+
+    public PojoServiceDescriptor(Class<?> ifc, Object service) {
+        super(ifc);
+        this.service = service;
+        model = new PojoParser().parse(ifc, new ActionsOnlyStrategy(true, Public.class)).getModel();
+
+        for (String name : model.getActionNames()) {
+            PojoAction act = model.getAction(name);
+            functions.put(name, new PojoServiceFunction(act));
+        }
+    }
+
+    @Override
+    public Object getObject() {
+        return service;
+    }
+
+    //    private static Class<?> findIfc(Object service) {
+    //        // TODO traverse thru all ifcs
+    //        Class<?> c = service instanceof Class ? (Class<?>) service : service.getClass();
+    //        if (c.isAnnotationPresent(WebService.class)) return c;
+    //        for (Class<?> i : c.getInterfaces()) {
+    //            if (i.isAnnotationPresent(WebService.class)) return i;
+    //        }
+    //        return c;
+    //    }
+
+    private class PojoServiceFunction extends FunctionDescriptor {
+
+        private PojoAction act;
+
+        public PojoServiceFunction(PojoAction act) {
+            this.act = act;
+            //			oneWay = act.getAnnotation(Oneway.class) != null || act.getReturnType() == null;
+            oneWay = !((Public) act.getAnnotation(Public.class)).readable();
+            returnType = act.getReturnType();
+            if (returnType == null) returnType = Void.class;
+        }
+
+        @Override
+        public RequestResult<Object> doExecute(IProperties properties, Object[] obj) {
+
+            // TODO check special case for direct handling
+
+            MProperties p = new MProperties();
+            Object res = null;
+            Throwable t = null;
+            try {
+                res = act.doExecute(service, obj);
+            } catch (IOException e) {
+                t = e.getCause();
+                if (t instanceof InvocationTargetException) {
+                    t = t.getCause();
+                }
+                if (t == null) t = e;
+            } catch (Throwable e) {
+                t = e;
+            }
+            if (t != null) {
+                // TODO move into ServerService and ServerJsonService to define the protocol in ONE
+                // place
+                p.setString(ClientObjectProxy.PROP_EXCEPION_TYPE, t.getClass().getCanonicalName());
+                p.setString(ClientObjectProxy.PROP_EXCEPION_TEXT, t.getMessage());
+                p.setString(
+                        ClientObjectProxy.PROP_EXCEPION_CLASS,
+                        act.getManagedClass().getCanonicalName());
+                p.setString(ClientObjectProxy.PROP_EXCEPTION_METHOD, act.getName());
+
+                log().t(act.getManagedClass().getCanonicalName(), act.getName(), t);
+            }
+            return new RequestResult<Object>(res, p);
+        }
+    }
+}
